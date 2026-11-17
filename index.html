@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QR Generator</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f4f5f7; color: #1c1e21; }
+  main { max-width: 960px; margin: 0 auto; padding: 24px; display: grid; gap: 24px; grid-template-columns: 1fr 1fr; }
+  @media (max-width: 760px) { main { grid-template-columns: 1fr; } }
+  h1 { grid-column: 1 / -1; margin: 0; font-size: 1.5rem; }
+  section { background: #fff; border-radius: 10px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  h2 { margin: 0 0 12px; font-size: 1.1rem; }
+  label { display: block; margin: 12px 0 4px; font-size: .85rem; color: #555; }
+  textarea, input, select { width: 100%; padding: 8px; border: 1px solid #ccd0d5; border-radius: 6px; font: inherit; }
+  input[type=color] { padding: 2px; height: 36px; }
+  .row { display: flex; gap: 12px; } .row > div { flex: 1; }
+  button { padding: 8px 14px; border: 0; border-radius: 6px; background: #2563eb; color: #fff; font: inherit; cursor: pointer; }
+  button.secondary { background: #e4e6eb; color: #1c1e21; }
+  button.danger { background: #dc2626; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  #preview { text-align: center; margin-top: 16px; }
+  #preview img { max-width: 100%; image-rendering: pixelated; border: 1px solid #e4e6eb; }
+  ul { list-style: none; margin: 0; padding: 0; max-height: 560px; overflow: auto; }
+  li { display: flex; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid #eee; }
+  li img { width: 56px; height: 56px; image-rendering: pixelated; border: 1px solid #e4e6eb; cursor: pointer; }
+  li .meta { flex: 1; min-width: 0; cursor: pointer; }
+  li .txt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  li .date { font-size: .75rem; color: #777; }
+  li button { padding: 4px 8px; }
+  .empty { color: #777; }
+</style>
+</head>
+<body>
+<main>
+  <h1>QR Generator (static codes, never expire)</h1>
+
+  <section>
+    <h2>Create</h2>
+    <label for="text">Text or URL</label>
+    <textarea id="text" rows="4" placeholder="https://example.com"></textarea>
+    <div class="row">
+      <div>
+        <label for="ecl">Error correction</label>
+        <select id="ecl">
+          <option value="L">Low</option>
+          <option value="M" selected>Medium</option>
+          <option value="Q">Quartile</option>
+          <option value="H">High</option>
+        </select>
+      </div>
+      <div>
+        <label for="size">Size (px)</label>
+        <input id="size" type="number" min="128" max="2048" step="32" value="512">
+      </div>
+    </div>
+    <div class="row">
+      <div><label for="fg">Foreground</label><input id="fg" type="color" value="#000000"></div>
+      <div><label for="bg">Background</label><input id="bg" type="color" value="#ffffff"></div>
+    </div>
+    <div id="preview"></div>
+    <div class="actions">
+      <button id="save">Save to history</button>
+      <button id="download" class="secondary">Download PNG</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>History</h2>
+    <div class="actions" style="margin:0 0 8px">
+      <button id="export" class="secondary">Export</button>
+      <button id="import" class="secondary">Import</button>
+      <button id="clear" class="danger">Clear</button>
+      <input id="file" type="file" accept="application/json" hidden>
+    </div>
+    <ul id="history"></ul>
+  </section>
+</main>
+
+<script src="qrcode.js"></script>
+<script>
+const KEY = "qr-history-v1";
+const $ = id => document.getElementById(id);
+let history = JSON.parse(localStorage.getItem(KEY) || "[]");
+
+function render(opts) {
+  // Returns a PNG data URL for the given options, or null if the text is empty.
+  if (!opts.text) return null;
+  const qr = qrcode(0, opts.ecl);
+  qr.addData(opts.text, "Byte");
+  qr.make();
+  const n = qr.getModuleCount(), margin = 4;
+  const cell = Math.max(1, Math.floor(opts.size / (n + margin * 2)));
+  const dim = cell * (n + margin * 2);
+  const c = document.createElement("canvas");
+  c.width = c.height = dim;
+  const g = c.getContext("2d");
+  g.fillStyle = opts.bg; g.fillRect(0, 0, dim, dim);
+  g.fillStyle = opts.fg;
+  for (let r = 0; r < n; r++)
+    for (let k = 0; k < n; k++)
+      if (qr.isDark(r, k)) g.fillRect((k + margin) * cell, (r + margin) * cell, cell, cell);
+  return c.toDataURL("image/png");
+}
+
+const current = () => ({
+  text: $("text").value, ecl: $("ecl").value, size: +$("size").value || 512,
+  fg: $("fg").value, bg: $("bg").value
+});
+
+function update() {
+  const p = $("preview");
+  try {
+    const url = render(current());
+    p.innerHTML = url ? `<img src="${url}" alt="QR code">` : "";
+  } catch (e) {
+    p.textContent = "Text is too long for a QR code at this error-correction level.";
+  }
+}
+
+function persist() { localStorage.setItem(KEY, JSON.stringify(history)); drawHistory(); }
+
+function drawHistory() {
+  const ul = $("history");
+  ul.innerHTML = "";
+  if (!history.length) { ul.innerHTML = '<li class="empty">No saved codes yet.</li>'; return; }
+  history.forEach((h, i) => {
+    const li = document.createElement("li");
+    let thumb = "";
+    try { thumb = render({ ...h, size: 112 }); } catch (e) {}
+    const img = document.createElement("img"); img.src = thumb; img.alt = "";
+    const meta = document.createElement("div"); meta.className = "meta";
+    const t = document.createElement("div"); t.className = "txt"; t.textContent = h.text;
+    const d = document.createElement("div"); d.className = "date"; d.textContent = new Date(h.created).toLocaleString();
+    meta.append(t, d);
+    const load = () => { for (const k of ["text","ecl","size","fg","bg"]) $(k).value = h[k]; update(); };
+    img.onclick = meta.onclick = load;
+    const del = document.createElement("button"); del.className = "secondary"; del.textContent = "Delete";
+    del.onclick = () => { history.splice(i, 1); persist(); };
+    li.append(img, meta, del);
+    ul.append(li);
+  });
+}
+
+$("save").onclick = () => {
+  const o = current();
+  if (!o.text) return;
+  history.unshift({ ...o, created: Date.now() });
+  persist();
+};
+$("download").onclick = () => {
+  const url = render(current());
+  if (!url) return;
+  const a = document.createElement("a"); a.href = url; a.download = "qr.png"; a.click();
+};
+$("clear").onclick = () => { if (confirm("Delete all history?")) { history = []; persist(); } };
+$("export").onclick = () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(history, null, 2)], { type: "application/json" }));
+  a.download = "qr-history.json"; a.click();
+};
+$("import").onclick = () => $("file").click();
+$("file").onchange = async e => {
+  try {
+    const data = JSON.parse(await e.target.files[0].text());
+    if (Array.isArray(data)) { history = data.concat(history); persist(); }
+  } catch (err) { alert("Invalid file."); }
+  e.target.value = "";
+};
+["text","ecl","size","fg","bg"].forEach(id => $(id).addEventListener("input", update));
+
+drawHistory();
+update();
+</script>
+</body>
+</html>
